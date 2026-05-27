@@ -259,3 +259,36 @@ fn header_only_has_no_data_records() {
         "--header-only: no header lines in output"
     );
 }
+
+#[test]
+fn sites_only_matches_bcftools() {
+    let Some(bcftools) = bcftools_path() else {
+        eprintln!("skipping: bcftools not found");
+        return;
+    };
+
+    let vcf = fixture();
+
+    let ours = ours().arg("--sites-only").arg(&vcf).output().unwrap();
+    assert!(
+        ours.status.success(),
+        "rsomics-vcf-view --sites-only failed: {}",
+        String::from_utf8_lossy(&ours.stderr)
+    );
+
+    // bcftools view -G drops genotype columns (FORMAT + all samples).
+    let theirs = Command::new(&bcftools)
+        .args(["view", "-G"])
+        .arg(&vcf)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .output()
+        .unwrap();
+    assert!(theirs.status.success(), "bcftools view -G failed");
+
+    assert_eq!(
+        records(&ours.stdout),
+        records(&theirs.stdout),
+        "--sites-only: data records differ from bcftools view -G"
+    );
+}
