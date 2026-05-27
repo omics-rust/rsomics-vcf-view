@@ -62,6 +62,12 @@ pub struct Cli {
     #[arg(short = 'H', long = "no-header")]
     pub no_header: bool,
 
+    /// Remove FORMAT and all sample columns from output records.
+    /// ##FORMAT header lines are also suppressed.
+    /// Equivalent to picard MakeSitesOnlyVcf.
+    #[arg(long = "sites-only")]
+    pub sites_only: bool,
+
     #[command(flatten)]
     pub common: CommonFlags,
 }
@@ -71,6 +77,11 @@ impl Cli {
         if self.header_only && self.no_header {
             return Err(RsomicsError::InvalidInput(
                 "--header-only and --no-header are mutually exclusive".into(),
+            ));
+        }
+        if self.sites_only && (self.samples.is_some() || self.samples_file.is_some()) {
+            return Err(RsomicsError::InvalidInput(
+                "--sites-only and --samples/--samples-file are mutually exclusive".into(),
             ));
         }
 
@@ -103,6 +114,7 @@ impl Cli {
             samples,
             header_only: self.header_only,
             no_header: self.no_header,
+            sites_only: self.sites_only,
         };
 
         let mut out: Box<dyn std::io::Write> = if self.output == "-" {
@@ -140,7 +152,7 @@ impl Tool for Cli {
 pub static HELP: HelpSpec = HelpSpec {
     name: META.name,
     version: META.version,
-    tagline: "Subset and filter VCF records — type, FILTER, sample, and header subsetting.",
+    tagline: "Subset and filter VCF records — type, FILTER, sample, sites-only, and header subsetting.",
     origin: Some(Origin {
         upstream: "bcftools view",
         upstream_license: "MIT",
@@ -271,6 +283,19 @@ pub static HELP: HelpSpec = HelpSpec {
                     description: "Suppress header lines; print data records only.",
                     why_default: None,
                 },
+                FlagSpec {
+                    short: None,
+                    long: "sites-only",
+                    aliases: &[],
+                    value: None,
+                    type_hint: Some("bool"),
+                    required: false,
+                    default: Some("false"),
+                    description: "Remove FORMAT and all sample columns. \
+                                  ##FORMAT header lines are also suppressed. \
+                                  Equivalent to picard MakeSitesOnlyVcf.",
+                    why_default: None,
+                },
             ],
         },
     ],
@@ -298,6 +323,10 @@ pub static HELP: HelpSpec = HelpSpec {
         Example {
             description: "Data records only (no header)",
             command: "rsomics-vcf-view -H input.vcf",
+        },
+        Example {
+            description: "Strip FORMAT and sample columns (sites-only VCF)",
+            command: "rsomics-vcf-view --sites-only input.vcf",
         },
     ],
     json_result_schema_doc: None,

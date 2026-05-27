@@ -110,6 +110,9 @@ pub struct ViewConfig {
     pub header_only: bool,
     /// Suppress all header lines (data records only).
     pub no_header: bool,
+    /// Strip FORMAT and all sample columns (picard MakeSitesOnlyVcf equivalent).
+    /// ##FORMAT header lines are also suppressed.
+    pub sites_only: bool,
 }
 
 pub struct ViewStats {
@@ -193,6 +196,21 @@ pub fn view_vcf(input: &Path, output: &mut dyn io::Write, cfg: &ViewConfig) -> R
     // Write header lines.
     if !cfg.no_header {
         for &line in all_lines[..header_count].iter() {
+            // --sites-only: drop ##FORMAT lines and truncate #CHROM at column 8.
+            if cfg.sites_only {
+                if line.starts_with(b"##FORMAT") {
+                    continue;
+                }
+                if line.starts_with(b"#CHROM") || line.starts_with(b"#chrom") {
+                    // Keep only the 8 fixed columns (CHROM POS ID REF ALT QUAL FILTER INFO).
+                    let cols: Vec<&[u8]> = line.split(|&b| b == b'\t').collect();
+                    let fixed = cols.len().min(8);
+                    let truncated = cols[..fixed].join(&b'\t');
+                    output.write_all(&truncated).map_err(RsomicsError::Io)?;
+                    output.write_all(b"\n").map_err(RsomicsError::Io)?;
+                    continue;
+                }
+            }
             // Replace #CHROM line if we rewrote it for sample subsetting.
             if sample_indices.is_some()
                 && (line.starts_with(b"#CHROM") || line.starts_with(b"#chrom"))
@@ -249,6 +267,16 @@ pub fn view_vcf(input: &Path, output: &mut dyn io::Write, cfg: &ViewConfig) -> R
         }
 
         stats.kept += 1;
+
+        // --sites-only: emit only the 8 fixed columns (no FORMAT, no samples).
+        if cfg.sites_only {
+            let all_cols: Vec<&[u8]> = line.split(|&b| b == b'\t').collect();
+            let fixed = all_cols.len().min(8);
+            let truncated = all_cols[..fixed].join(&b'\t');
+            output.write_all(&truncated).map_err(RsomicsError::Io)?;
+            output.write_all(b"\n").map_err(RsomicsError::Io)?;
+            continue;
+        }
 
         // -s sample subsetting: reconstruct the line with only kept columns.
         if let Some(ref indices) = sample_indices {
@@ -356,5 +384,46 @@ mod tests {
     fn type_zero_diffs_is_snp() {
         // REF == ALT (degenerate): one diff count = 0 → SNP category (bcftools agrees).
         assert_eq!(allele_type(b"A", b"A"), VcfType::Snp);
+    }
+
+    #[test]
+    fn sites_only_strips_format_and_samples() {
+        use std::io::Cursor;
+        use std::io::Write as IoWrite;
+        use tempfile::NamedTempFile;
+
+        let vcf = b"\
+##fileformat=VCFv4.1\n\
+##FORMAT=<ID=GT,Number=1,Type=String,Description=\"Genotype\">\n\
+#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tNA12878\tNA12879\n\
+chr1\t100\t.\tA\tT\t50\tPASS\t.\tGT\t0/1\t0/0\n\
+chr1\t200\t.\tG\tC\t60\tPASS\t.\tGT\t1/1\t0/1\n\
+";
+        let mut tmp = NamedTempFile::new().unwrap();
+        tmp.write_all(vcf).unwrap();
+
+        let mut out = Cursor::new(Vec::new());
+        let cfg = ViewConfig {
+            keep_types: None,
+            exclude_types: None,
+            apply_filters: None,
+            samples: None,
+            header_only: false,
+            no_header: false,
+            sites_only: true,
+        };
+        let stats = view_vcf(tmp.path(), &mut out, &cfg).unwrap();
+        assert_eq!(stats.kept, 2);
+
+        let result = String::from_utf8(out.into_inner()).unwrap();
+        // ##FORMAT line must be absent.
+        assert!(!result.contains("##FORMAT"));
+        // #CHROM line must have exactly 8 fields (no FORMAT or sample columns).
+        let chrom_line = result.lines().find(|l| l.starts_with("#CHROM")).unwrap();
+        assert_eq!(chrom_line.split('\t').count(), 8, "#CHROM: {chrom_line}");
+        // Data records must have exactly 8 fields.
+        for data_line in result.lines().filter(|l| !l.starts_with('#')) {
+            assert_eq!(data_line.split('\t').count(), 8, "data: {data_line}");
+        }
     }
 }
