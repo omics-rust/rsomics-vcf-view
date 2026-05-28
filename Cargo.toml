@@ -12,6 +12,11 @@ description = "Subset and filter VCF records — Rust port of bcftools view"
 name = "rsomics-vcf-view"
 path = "src/main.rs"
 
+
+[lib]
+name = "rsomics_vcf_view"
+path = "src/lib.rs"
+doctest = false
 [dependencies]
 rsomics-common = { version = "0.6" }
 rsomics-help = { version = "0.3" }
