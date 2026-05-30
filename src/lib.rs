@@ -34,7 +34,6 @@ impl VcfType {
 }
 
 fn allele_type(ref_allele: &[u8], alt: &[u8]) -> VcfType {
-    // Symbolic or missing allele.
     if alt.contains(&b'<') || alt.contains(&b'*') {
         return VcfType::Other;
     }
@@ -43,7 +42,6 @@ fn allele_type(ref_allele: &[u8], alt: &[u8]) -> VcfType {
     if rlen != alen {
         return VcfType::Indel;
     }
-    // Same length: count differing positions.
     let diffs = ref_allele
         .iter()
         .zip(alt.iter())
@@ -58,7 +56,6 @@ fn allele_type(ref_allele: &[u8], alt: &[u8]) -> VcfType {
 
 /// True if the record's ALT field has at least one allele matching any type in `types`.
 fn record_matches_any_type(ref_allele: &[u8], alt_field: &[u8], types: &HashSet<VcfType>) -> bool {
-    // ALT is comma-separated; a record matches if ANY allele matches.
     for alt in alt_field.split(|&b| b == b',') {
         if types.contains(&allele_type(ref_allele, alt)) {
             return true;
@@ -74,21 +71,13 @@ fn record_matches_any_type(ref_allele: &[u8], alt_field: &[u8], types: &HashSet<
 /// - requesting "PASS" in the list matches records with FILTER == "PASS" or ".".
 /// - requesting "." in the list matches records with FILTER == "PASS" or ".".
 fn filter_passes(filter_field: &[u8], allowed: &HashSet<Vec<u8>>) -> bool {
-    // FILTER may be multi-valued ("PASS;LowQual" is non-standard but semicolons appear;
-    // the standard delimiter for multiple applied filters is ";").
-    // For simplicity: split on ";" like bcftools does.
+    // bcftools view -f: "." and "PASS" are both the unfiltered state.
     let pass_bytes: &[u8] = b"PASS";
     let dot_bytes: &[u8] = b".";
-
-    // Normalise: if the field is "." or "PASS", treat both as the PASS state.
     let wants_pass = allowed.contains(pass_bytes) || allowed.contains(dot_bytes);
-
-    // If the FILTER field is "." or "PASS", the record has no filter applied.
     if filter_field == dot_bytes || filter_field == pass_bytes {
         return wants_pass;
     }
-
-    // Otherwise split on ";" and check each filter token.
     for token in filter_field.split(|&b| b == b';') {
         if allowed.contains(token) {
             return true;
@@ -134,7 +123,6 @@ pub fn view_vcf(input: &Path, output: &mut dyn io::Write, cfg: &ViewConfig) -> R
         raw
     };
 
-    // Resolve sample column indices and rewrite #CHROM if needed.
     let mut sample_indices: Option<Vec<usize>> = None;
     let mut chrom_line_rewritten: Option<Vec<u8>> = None;
 
@@ -150,20 +138,15 @@ pub fn view_vcf(input: &Path, output: &mut dyn io::Write, cfg: &ViewConfig) -> R
     let header_end = all_lines.iter().position(|l| !l.starts_with(b"#"));
     let header_count = header_end.unwrap_or(all_lines.len());
 
-    // Resolve sample column indices from the #CHROM line.
     if let Some(sample_names) = &cfg.samples {
-        // Find the #CHROM line (last header line starting with a single '#').
         let chrom_line_idx = (0..header_count)
             .rfind(|&i| all_lines[i].starts_with(b"#CHROM") || all_lines[i].starts_with(b"#chrom"));
         if let Some(idx) = chrom_line_idx {
             let chrom_line = all_lines[idx];
             let cols: Vec<&[u8]> = chrom_line.split(|&b| b == b'\t').collect();
-            // Fixed VCF columns: CHROM POS ID REF ALT QUAL FILTER INFO [FORMAT sample…]
-            // Sample names start at column index 9 (0-based).
-            let fixed = 9usize;
+            let fixed = 9usize; // sample names start at col 9
             if cols.len() > fixed {
                 let vcf_samples: Vec<&[u8]> = cols[fixed..].to_vec();
-                // Map each requested name → its 0-based index within the sample columns.
                 let mut indices: Vec<usize> = Vec::with_capacity(sample_names.len());
                 for name in sample_names {
                     let pos = vcf_samples
@@ -177,7 +160,6 @@ pub fn view_vcf(input: &Path, output: &mut dyn io::Write, cfg: &ViewConfig) -> R
                         })?;
                     indices.push(pos);
                 }
-                // Rewrite #CHROM line to retain only the requested samples.
                 let mut new_cols: Vec<&[u8]> = cols[..fixed].to_vec();
                 for &i in &indices {
                     new_cols.push(vcf_samples[i]);
@@ -187,22 +169,18 @@ pub fn view_vcf(input: &Path, output: &mut dyn io::Write, cfg: &ViewConfig) -> R
                 chrom_line_rewritten = Some(rewritten);
                 sample_indices = Some(indices);
             } else {
-                // No sample columns — nothing to subset.
                 sample_indices = Some(vec![]);
             }
         }
     }
 
-    // Write header lines.
     if !cfg.no_header {
         for &line in all_lines[..header_count].iter() {
-            // --sites-only: drop ##FORMAT lines and truncate #CHROM at column 8.
             if cfg.sites_only {
                 if line.starts_with(b"##FORMAT") {
                     continue;
                 }
                 if line.starts_with(b"#CHROM") || line.starts_with(b"#chrom") {
-                    // Keep only the 8 fixed columns (CHROM POS ID REF ALT QUAL FILTER INFO).
                     let cols: Vec<&[u8]> = line.split(|&b| b == b'\t').collect();
                     let fixed = cols.len().min(8);
                     let truncated = cols[..fixed].join(&b'\t');
@@ -211,7 +189,6 @@ pub fn view_vcf(input: &Path, output: &mut dyn io::Write, cfg: &ViewConfig) -> R
                     continue;
                 }
             }
-            // Replace #CHROM line if we rewrote it for sample subsetting.
             if sample_indices.is_some()
                 && (line.starts_with(b"#CHROM") || line.starts_with(b"#chrom"))
                 && let Some(ref rw) = chrom_line_rewritten
@@ -247,7 +224,6 @@ pub fn view_vcf(input: &Path, output: &mut dyn io::Write, cfg: &ViewConfig) -> R
         let _info = cols.next().unwrap_or(b"");
         let _rest = cols.next(); // FORMAT + all sample columns joined (we split further below)
 
-        // -v / -V type filter.
         if let Some(ref keep) = cfg.keep_types
             && !record_matches_any_type(ref_allele, alt_field, keep)
         {
@@ -259,7 +235,6 @@ pub fn view_vcf(input: &Path, output: &mut dyn io::Write, cfg: &ViewConfig) -> R
             continue;
         }
 
-        // -f filter.
         if let Some(ref allowed) = cfg.apply_filters
             && !filter_passes(filter_field, allowed)
         {
@@ -268,7 +243,6 @@ pub fn view_vcf(input: &Path, output: &mut dyn io::Write, cfg: &ViewConfig) -> R
 
         stats.kept += 1;
 
-        // --sites-only: emit only the 8 fixed columns (no FORMAT, no samples).
         if cfg.sites_only {
             let all_cols: Vec<&[u8]> = line.split(|&b| b == b'\t').collect();
             let fixed = all_cols.len().min(8);
@@ -278,12 +252,8 @@ pub fn view_vcf(input: &Path, output: &mut dyn io::Write, cfg: &ViewConfig) -> R
             continue;
         }
 
-        // -s sample subsetting: reconstruct the line with only kept columns.
         if let Some(ref indices) = sample_indices {
-            // Re-split the full line on tab to access all columns.
             let all_cols: Vec<&[u8]> = line.split(|&b| b == b'\t').collect();
-            // Fixed columns 0-8: CHROM POS ID REF ALT QUAL FILTER INFO FORMAT
-            // Sample columns start at 9.
             let fixed_end = 9usize.min(all_cols.len());
             let mut out_cols: Vec<&[u8]> = all_cols[..fixed_end].to_vec();
             let sample_cols = &all_cols[fixed_end..];
